@@ -1,0 +1,1 @@
+{"name":"skillhub","version":"1.0.0","private":true,"scripts":{"start":"node --env-file-if-exists=.env.local server.js","test":"node --test"},"engines":{"node":">=22.13"},"dependencies":{"quill":"2.0.3"}}
