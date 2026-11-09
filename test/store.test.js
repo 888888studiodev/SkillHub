@@ -77,3 +77,52 @@ test('editing a post changes title and category atomically while retaining its c
   assert.equal(store.getPost(post.id).title, '新名');
   store.close();
 });
+
+test('direction and post links use unique pinyin initials and survive renames and moves', () => {
+  const store = createStore(':memory:');
+  const category = store.createCategory('合集素材', null);
+  assert.equal(category.slug, 'hjsc');
+  const other = store.createCategory('合集素材', null);
+  assert.equal(other.slug, 'hjsc-2');
+  const { id } = store.createPost({
+    categoryId: category.id, title: '合集素材', author: '股东F', content: '介绍'
+  });
+  assert.equal(store.getPost(id).slug, 'hjsc-3');
+  assert.equal(store.posts()[0].slug, 'hjsc-3');
+
+  store.renameCategory(category.id, '新名称');
+  store.moveCategory(category.id, { placement: 'inside', targetId: other.id });
+  store.updatePostDocument(id, { ops: [{ insert: '新正文\n' }] }, { title: '新标题', categoryId: other.id });
+  assert.equal(store.categories().find(item => item.id === category.id).slug, 'hjsc');
+  assert.equal(store.getPost(id).slug, 'hjsc-3');
+  assert.notEqual(store.createCategory('API', null).slug, 'api');
+  store.close();
+});
+
+test('existing directions and posts get links when the database is upgraded', t => {
+  const { DatabaseSync } = require('node:sqlite');
+  const { mkdtempSync, rmSync } = require('node:fs');
+  const { tmpdir } = require('node:os');
+  const { join } = require('node:path');
+  const directory = mkdtempSync(join(tmpdir(), 'skillhub-slug-test-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'legacy.sqlite');
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER, position INTEGER DEFAULT 0);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY, category_id INTEGER NOT NULL, title TEXT NOT NULL,
+      author TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', content TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, document TEXT);
+    INSERT INTO categories (id, name) VALUES (1, '合集素材');
+    INSERT INTO posts (id, category_id, title, author, content) VALUES (1, 1, '合集素材', '股东F', '旧内容');
+  `);
+  legacy.close();
+
+  for (let startup = 0; startup < 2; startup++) {
+    const store = createStore(path);
+    assert.equal(store.categories()[0].slug, 'hjsc');
+    assert.equal(store.getPost(1).slug, 'hjsc-2');
+    assert.equal(store.getPost(1).content, '旧内容');
+    store.close();
+  }
+});

@@ -56,10 +56,19 @@ const server = http.createServer(async (req, res) => {
   const send = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
   try {
     if (apiOrigin && url.pathname.startsWith('/api/')) return proxyApi(req, res, url, send);
-    if (req.method === 'GET' && files.has(url.pathname)) {
-      const [file, type] = files.get(url.pathname);
-      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache' });
-      return res.end(fs.readFileSync(file));
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      const match = url.pathname.match(/^\/([a-z0-9][a-z0-9-]{0,89})(\/?)$/);
+      const slug = match && match[1] !== 'api' ? match[1] : null;
+      if (slug && match[2]) {
+        res.writeHead(308, { Location: `../${slug}${url.search}` });
+        return res.end();
+      }
+      const asset = files.get(url.pathname) || (slug && files.get('/'));
+      if (asset) {
+        const [file, type] = asset;
+        res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache' });
+        return res.end(req.method === 'HEAD' ? undefined : fs.readFileSync(file));
+      }
     }
     let body = {};
     if (['POST', 'PATCH'].includes(req.method)) {

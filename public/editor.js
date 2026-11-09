@@ -102,14 +102,17 @@ function insertDocumentItem(editor, type) {
   }, '插入', () => editor.focus());
 }
 
+let leaveDocumentEditor;
+
 function openDocumentEditor(draft, save) {
+  const originalUrl = location.href;
   const layout = $('.layout');
   const workspace = $('#document-workspace');
   layout.hidden = true;
   workspace.hidden = false;
   workspace.innerHTML = `
     <header class="editor-header">
-      <div class="editor-location"><span>SkillHub</span><span aria-hidden="true">/</span><span id="editor-direction"></span></div>
+      <div id="editor-path"></div>
       <div class="editor-actions">
         <button type="button" class="secondary" id="editor-cancel">取消</button>
         <button type="button" class="primary" id="editor-save">${draft.id ? '保存更改' : '保存并发布'}</button>
@@ -119,6 +122,7 @@ function openDocumentEditor(draft, save) {
       <div class="editor-properties">
         <label class="editor-title-field">Skill 名称<input name="title" maxlength="160" required value="${escapeHTML(draft.title)}"></label>
         <div class="editor-category-picker">${categoryPickerFields(draft.categoryId)}</div>
+        ${draft.id ? '' : namePickerFields('发布人', draft.author)}
       </div>
       <div id="document-toolbar" aria-label="文档格式">
         <span class="ql-formats">
@@ -130,22 +134,22 @@ function openDocumentEditor(draft, save) {
           <select class="ql-size" aria-label="字号"><option value="small">小</option><option selected>正常</option><option value="large">大</option><option value="huge">特大</option></select>
         </span>
         <span class="ql-formats">
-          <button type="button" class="ql-bold" aria-label="加粗" title="加粗"></button>
-          <button type="button" class="ql-italic" aria-label="斜体" title="斜体"></button>
-          <button type="button" class="ql-underline" aria-label="下划线" title="下划线"></button>
-          <button type="button" class="ql-strike" aria-label="删除线" title="删除线"></button>
+          <button type="button" class="ql-bold" aria-label="加粗"></button>
+          <button type="button" class="ql-italic" aria-label="斜体"></button>
+          <button type="button" class="ql-underline" aria-label="下划线"></button>
+          <button type="button" class="ql-strike" aria-label="删除线"></button>
         </span>
         <span class="ql-formats">
-          <button type="button" class="ql-list" value="ordered" aria-label="编号列表" title="编号列表"></button>
-          <button type="button" class="ql-list" value="bullet" aria-label="项目列表" title="项目列表"></button>
-          <button type="button" class="ql-blockquote" aria-label="引用" title="引用"></button>
-          <button type="button" class="ql-code-block" aria-label="代码块" title="代码块"></button>
+          <button type="button" class="ql-list" value="ordered" aria-label="编号列表"></button>
+          <button type="button" class="ql-list" value="bullet" aria-label="项目列表"></button>
+          <button type="button" class="ql-blockquote" aria-label="引用"></button>
+          <button type="button" class="ql-code-block" aria-label="代码块"></button>
         </span>
         <span class="ql-formats">
-          <button type="button" class="ql-link" aria-label="插入链接" title="插入链接"></button>
-          <button type="button" class="ql-image" aria-label="插入图片" title="插入图片"></button>
-          <button type="button" class="ql-video" aria-label="插入视频" title="插入视频"></button>
-          <button type="button" class="ql-clean" aria-label="清除格式" title="清除格式"></button>
+          <button type="button" class="ql-link" aria-label="插入链接"></button>
+          <button type="button" class="ql-image" aria-label="插入图片"></button>
+          <button type="button" class="ql-video" aria-label="插入视频"></button>
+          <button type="button" class="ql-clean" aria-label="清除格式"></button>
         </span>
       </div>
       <div id="document-body"></div>
@@ -171,6 +175,9 @@ function openDocumentEditor(draft, save) {
   for (const [format, label] of Object.entries({ header: '标题级别', font: '字体', size: '字号' })) {
     $(`#document-toolbar .ql-${format}.ql-picker .ql-picker-label`).setAttribute('aria-label', label);
   }
+  for (const control of workspace.querySelectorAll('#document-toolbar button[aria-label], #document-toolbar .ql-picker-label[aria-label]')) {
+    control.dataset.tooltip = control.getAttribute('aria-label');
+  }
   if (draft.document) editor.setContents(draft.document);
   else editor.setText(draft.content);
   editor.history.clear();
@@ -191,26 +198,44 @@ function openDocumentEditor(draft, save) {
   const titleField = workspace.querySelector('input[name="title"]');
   const categoryField = workspace.querySelector('select[name="categoryId"]');
   setupCategoryPicker($('.editor-category-picker'), saveButton);
-  const showDirection = () => {
-    $('#editor-direction').textContent = categoryField.selectedOptions[0]?.textContent ?? '';
+  const authorField = draft.id ? null : setupNamePicker(workspace.querySelector('.name-picker'));
+  const editorPath = $('#editor-path');
+  const showPath = () => {
+    editorPath.innerHTML = breadcrumbs(Number(categoryField.value), titleField.value.trim() || '编辑 Skill');
   };
-  showDirection();
-  titleField.addEventListener('input', () => { dirty = true; });
-  categoryField.addEventListener('change', () => {
+  const updatePath = () => {
     dirty = true;
-    showDirection();
-  });
+    showPath();
+  };
+  showPath();
+  titleField.addEventListener('input', updatePath);
+  categoryField.addEventListener('change', updatePath);
 
   function closeEditor() {
+    leaveDocumentEditor = null;
     window.removeEventListener('beforeunload', warnOnExit);
     workspace.hidden = true;
     workspace.replaceChildren();
     layout.hidden = false;
   }
 
-  cancel.onclick = () => {
-    if (dirty && !confirm('放弃本次编辑？')) return;
+  const canLeaveEditor = () => !cancel.disabled && (!dirty || confirm('放弃本次编辑？'));
+  leaveDocumentEditor = () => {
+    if (!canLeaveEditor()) {
+      history.pushState(null, '', originalUrl);
+      return false;
+    }
     closeEditor();
+    return true;
+  };
+  cancel.onclick = () => {
+    if (canLeaveEditor()) closeEditor();
+  };
+  editorPath.onclick = event => {
+    const crumb = event.target.closest('[data-breadcrumb]');
+    if (!crumb || !canLeaveEditor()) return;
+    closeEditor();
+    navigateDirection(Number(crumb.dataset.breadcrumb) || null);
   };
   saveButton.onclick = async () => {
     const title = titleField.value.trim();
@@ -220,10 +245,13 @@ function openDocumentEditor(draft, save) {
       (title ? categoryField : titleField).focus();
       return;
     }
+    if (authorField && !authorField.reportValidity()) return;
     cancel.disabled = saveButton.disabled = true;
     error.textContent = '';
     try {
-      await save({ title, categoryId, document: editor.getContents() });
+      const post = { title, categoryId, document: editor.getContents() };
+      if (authorField) post.author = authorField.value;
+      await save(post);
       closeEditor();
     } catch (failure) {
       error.textContent = failure.message;

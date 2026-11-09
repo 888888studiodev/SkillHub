@@ -1,4 +1,6 @@
-const state = { categories: [], posts: [], selected: null, post: null, query: '', collapsed: new Set() };
+const state = { categories: [], posts: [], selected: null, post: null, query: '', missing: false, collapsed: new Set() };
+const pageBase = new URL('.', location.href);
+let navigationRequest = 0;
 const $ = selector => document.querySelector(selector);
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
 const date = value => new Date(value.replace(' ', 'T') + 'Z').toLocaleString('zh-CN', { year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
@@ -10,7 +12,27 @@ async function api(url, options = {}) {
   return data;
 }
 function notify(message) { const toast = $('#toast'); toast.textContent = message; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 3000); }
-async function refresh() { [state.categories, state.posts] = await Promise.all([api('/categories'), api('/posts')]); renderTree(); renderContent(); }
+async function refresh(restoreUrl = false) {
+  [state.categories, state.posts] = await Promise.all([api('/categories'), api('/posts')]);
+  if (restoreUrl) return restorePageFromUrl();
+  renderTree();
+  renderContent();
+}
+
+function pagePath(slug) {
+  return new URL(slug || '.', pageBase).pathname;
+}
+
+function updatePageUrl(slug, replace = false) {
+  const path = pagePath(slug);
+  if (path === location.pathname) return;
+  if (replace) history.replaceState(null, '', path);
+  else history.pushState(null, '', path);
+}
+
+function isOrdinaryLinkClick(event) {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+}
 function descendants(id) {
   const ids = new Set([id]); let changed = true;
   while (changed) { changed = false; for (const category of state.categories) if (ids.has(category.parent_id) && !ids.has(category.id)) { ids.add(category.id); changed = true; } }
@@ -20,36 +42,156 @@ function renderTree() {
   function branch(parent, depth) {
     return state.categories.filter(c => c.parent_id === parent).map(c => {
       const children = state.categories.some(item => item.parent_id === c.id);
-      return `<div data-direction-id="${c.id}" class="tree-row ${state.selected === c.id ? 'active' : ''}" style="--depth:${depth}"><button class="toggle" data-toggle="${c.id}" aria-label="展开或收起">${children ? (state.collapsed.has(c.id) ? '›' : '⌄') : ''}</button><button class="tree-name" data-category="${c.id}"><span class="folder">▱</span><span>${escapeHTML(c.name)}</span></button><span class="direction-grip" data-direction-grip aria-hidden="true" title="拖动排序，或移入另一个方向">⠿</span><button class="dots" data-actions="${c.id}" aria-label="方向操作">···</button></div>${state.collapsed.has(c.id) ? '' : branch(c.id, depth + 1)}`;
+      return `<div data-direction-id="${c.id}" class="tree-row ${state.selected === c.id ? 'active' : ''}" style="--depth:${depth}"><button class="toggle" data-toggle="${c.id}" aria-label="展开或收起">${children ? (state.collapsed.has(c.id) ? '›' : '⌄') : ''}</button><a class="tree-name" data-category="${c.id}" href="${escapeHTML(pagePath(c.slug))}"><span class="folder">▱</span><span>${escapeHTML(c.name)}</span></a><span class="direction-grip" data-direction-grip aria-hidden="true" title="拖动排序，或移入另一个方向">⠿</span><button class="dots" data-actions="${c.id}" aria-label="方向操作">···</button></div>${state.collapsed.has(c.id) ? '' : branch(c.id, depth + 1)}`;
     }).join('');
   }
   const rows = branch(null, 0);
   $('#tree').innerHTML = rows
     ? `${rows}<div class="direction-root-drop" data-direction-root>移到顶层末尾</div>`
     : '<p class="tree-empty">还没有方向，添加一个吧</p>';
-  $('#all').classList.toggle('selected', state.selected === null && !state.post);
+  $('#all').classList.toggle('selected', state.selected === null && !state.post && !state.missing);
 }
+function breadcrumbs(categoryId, title) {
+  const path = [];
+  for (let id = categoryId; id != null;) {
+    const category = state.categories.find(item => item.id === id);
+    if (!category) break;
+    path.unshift(category);
+    id = category.parent_id;
+  }
+  const home = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.8 1.5 12h3v9h5v-6h5v6h5v-9h3L12 2.8Z"/></svg>';
+  const items = [{ id: '', name: '主页', icon: home }, ...path];
+  if (title) items.push({ name: title });
+
+  return `<nav class="breadcrumbs" aria-label="当前位置"><ol>${items.map((item, index) => {
+    const content = item.icon || escapeHTML(item.name);
+    const style = item.icon ? ' breadcrumb-home' : '';
+    const accessibleName = item.icon ? ' aria-label="主页"' : '';
+    const crumb = index === items.length - 1
+      ? `<span class="breadcrumb-item${style}" aria-current="page"${accessibleName}>${content}</span>`
+      : `<button type="button" class="breadcrumb-item${style}" data-breadcrumb="${item.id}"${accessibleName}>${content}</button>`;
+    return `<li>${crumb}</li>`;
+  }).join('')}</ol></nav>`;
+}
+
+function navigateDirection(id, writeUrl = true) {
+  navigationRequest++;
+  state.selected = id;
+  state.post = null;
+  state.missing = false;
+  if (writeUrl) updatePageUrl(state.categories.find(category => category.id === id)?.slug);
+  setSidebarOpen(false);
+  renderTree();
+  renderContent();
+}
+
+async function navigatePost(id, writeUrl = true) {
+  const request = ++navigationRequest;
+  const post = await api(`/posts/${id}`);
+  if (request !== navigationRequest) return;
+  state.post = post;
+  state.selected = post.category_id;
+  state.missing = false;
+  if (writeUrl) updatePageUrl(post.slug);
+  renderTree();
+  renderContent();
+}
+
+function restorePageFromUrl() {
+  const slug = location.pathname.slice(pageBase.pathname.length);
+  if (!slug) return navigateDirection(null, false);
+  const category = state.categories.find(item => item.slug === slug);
+  if (category) return navigateDirection(category.id, false);
+  const post = state.posts.find(item => item.slug === slug);
+  if (post) return navigatePost(post.id, false);
+
+  navigationRequest++;
+  state.selected = null;
+  state.post = null;
+  state.missing = true;
+  renderTree();
+  renderContent();
+}
+
 function renderContent() {
   if (state.post) return renderPost();
+  if (state.missing) {
+    document.title = '页面不存在 — SkillHub';
+    $('#content').innerHTML = '<section class="page"><h1>页面不存在</h1><button class="secondary" data-breadcrumb="">返回主页</button></section>';
+    return;
+  }
   const cat = state.categories.find(c => c.id === state.selected);
+  document.title = cat ? `${cat.name} — SkillHub` : 'SkillHub — 团队的 Skill 知识库';
   const ids = cat ? descendants(cat.id) : null;
   const query = state.query.toLowerCase();
-  const posts = state.posts.filter(p => (!ids || ids.has(p.category_id)) && `${p.title} ${p.content} ${p.author} ${p.category_name}`.toLowerCase().includes(query));
-  $('#content').innerHTML = `<section class="page"><div class="crumb">⌂ <span>›</span> ${cat ? escapeHTML(cat.name) : '全部方向'}</div><div class="page-title"><div><div class="eyebrow">TEAM KNOWLEDGE SPACE</div><h1>${cat ? escapeHTML(cat.name) : '发现团队的好 Skill'}</h1><p>${cat ? '浏览这个方向下的分享与讨论' : '把发现的好工具收藏起来，一起交流使用心得。'}</p></div><button class="primary" id="list-new">＋ 分享 Skill</button></div><div class="list-header"><div><h2>${cat ? '这个方向的分享' : '最近分享'}</h2><p>每一个好发现，都值得被记录</p></div><span>${posts.length} 篇帖子</span></div>${posts.length ? `<div class="post-list">${posts.map(p => `<button class="post-row" data-post="${p.id}">${avatar(p.author)}<div class="post-main"><div class="post-title">${escapeHTML(p.title)}</div><p>${escapeHTML(p.content.slice(0, 100) || '包含图片或视频')}</p><div class="post-meta"><span>${escapeHTML(p.author)}</span><span>·</span><span>${escapeHTML(p.category_name)}</span><span>·</span><span>${date(p.created_at)}</span></div></div><span class="comment-count">♧ ${p.comment_count}</span><span class="row-arrow">›</span></button>`).join('')}</div>` : `<div class="empty"><div class="empty-icon">▤</div><h3>${query ? '没有找到相关内容' : '这里还没有分享'}</h3><p>${query ? '试试其他关键词' : '从一个好用的 Skill 开始，和团队分享你的发现。'}</p>${!query ? '<button class="secondary" id="empty-new">＋ 分享第一个 Skill</button>' : ''}</div>`}</section>`;
+  const childCount = cat?.parent_id === null
+    ? state.categories.filter(category => category.parent_id === cat.id).length
+    : null;
+  const directionPosts = ids ? state.posts.filter(post => ids.has(post.category_id)) : state.posts;
+  const posts = directionPosts.filter(post =>
+    `${post.title} ${post.content} ${post.author} ${post.category_name}`.toLowerCase().includes(query));
+  const latest = directionPosts.reduce((time, post) => post.created_at > time ? post.created_at : time, '');
+  const latestDate = latest
+    ? `<time datetime="${escapeHTML(latest.replace(' ', 'T') + 'Z')}">${date(latest)}</time>`
+    : '—';
+
+  $('#content').innerHTML = `
+    <section class="page">
+      ${breadcrumbs(cat?.id)}
+      <div class="page-title">
+        <h1>${cat ? escapeHTML(cat.name) : '发现团队的好 Skill'}</h1>
+        <button class="primary" id="list-new">＋ 分享 Skill</button>
+      </div>
+      <div class="post-status">
+        <div class="post-status-counts">
+          ${childCount === null ? '' : `<span><strong>${childCount}</strong> 个子方向</span>`}
+          <span><strong>${directionPosts.length}</strong> 篇帖子</span>
+        </div>
+        <span>最新发布 <strong>${latestDate}</strong></span>
+      </div>
+      ${posts.length ? `<div class="post-list">${posts.map(p => `
+        <a class="post-row" data-post="${p.id}" href="${escapeHTML(pagePath(p.slug))}">
+          ${avatar(p.author)}
+          <div class="post-main">
+            <div class="post-title">${escapeHTML(p.title)}</div>
+            <p>${escapeHTML(p.content.slice(0, 100) || '包含图片或视频')}</p>
+            <div class="post-meta"><span>${escapeHTML(p.author)}</span><span>·</span><span>${escapeHTML(p.category_name)}</span><span>·</span><span>${date(p.created_at)}</span></div>
+          </div>
+          <span class="comment-count">♧ ${p.comment_count}</span><span class="row-arrow">›</span>
+        </a>`).join('')}</div>` : `
+        <div class="empty">
+          <div class="empty-icon">▤</div>
+          <h3>${query ? '没有找到相关内容' : '这里还没有分享'}</h3>
+          ${!query ? '<button class="secondary" id="empty-new">＋ 分享第一个 Skill</button>' : ''}
+        </div>`}
+    </section>`;
   $('#list-new').onclick = openPostDialog;
   if ($('#empty-new')) $('#empty-new').onclick = openPostDialog;
 }
 function renderPost() {
   const p = state.post;
-  $('#content').innerHTML = `<article class="page detail"><div class="crumb"><button id="back">⌂ 全部方向</button><span>›</span><button id="back-category">${escapeHTML(p.category_name)}</button></div><div class="detail-title"><h1>${escapeHTML(p.title)}</h1><button class="secondary" id="edit-document">编辑文档</button></div><div class="author-line">${avatar(p.author)}<div><strong>${escapeHTML(p.author)}</strong><span>${date(p.created_at)}</span></div></div>${p.source ? `<div class="source">↗ <span>来源</span><a href="${escapeHTML(p.source)}" target="_blank" rel="noopener noreferrer">${escapeHTML(p.source)}</a></div>` : ''}<div id="post-document" class="post-body${p.document ? ' rich-document' : ''}">${p.document ? '' : escapeHTML(p.content)}</div><section class="comments"><div class="comment-heading"><h2>评论 <span>${p.comments.length}</span></h2><p>分享你的使用心得和想法</p></div>${p.comments.length ? p.comments.map(c => `<div class="comment">${avatar(c.author)}<div><div class="comment-meta"><strong>${escapeHTML(c.author)}</strong><time>${date(c.created_at)}</time></div><p>${escapeHTML(c.content)}</p></div></div>`).join('') : '<p class="no-comments">还没有评论，来分享第一个想法吧。</p>'}<form id="comment-form" class="comment-form"><label for="nickname">昵称</label><input id="nickname" name="author" maxlength="40" required placeholder="输入你的昵称" value="${escapeHTML(localStorage.getItem('skillhub-nickname') || '')}"><label for="comment">评论</label><textarea id="comment" name="content" maxlength="10000" required placeholder="写下你的评论..."></textarea><div class="form-bottom"><span>友善交流，分享你的真实体验</span><button class="primary">发表评论</button></div><p id="comment-error" class="error" role="alert"></p></form></section></article>`;
+  document.title = `${p.title} — SkillHub`;
+  $('#content').innerHTML = `<article class="page detail">${breadcrumbs(p.category_id, p.title)}<div class="detail-title"><h1>${escapeHTML(p.title)}</h1><button class="secondary" id="edit-document">编辑文档</button></div><div class="author-line">${avatar(p.author)}<div><strong>${escapeHTML(p.author)}</strong><span>${date(p.created_at)}</span></div></div>${p.source ? `<div class="source">↗ <span>来源</span><a href="${escapeHTML(p.source)}" target="_blank" rel="noopener noreferrer">${escapeHTML(p.source)}</a></div>` : ''}<div id="post-document" class="post-body${p.document ? ' rich-document' : ''}">${p.document ? '' : escapeHTML(p.content)}</div><section class="comments"><div class="comment-heading"><h2>评论 <span>${p.comments.length}</span></h2><p>分享你的使用心得和想法</p></div>${p.comments.length ? p.comments.map(c => `<div class="comment">${avatar(c.author)}<div><div class="comment-meta"><strong>${escapeHTML(c.author)}</strong><time>${date(c.created_at)}</time></div><p>${escapeHTML(c.content)}</p></div></div>`).join('') : '<p class="no-comments">还没有评论，来分享第一个想法吧。</p>'}<form id="comment-form" class="comment-form">${namePickerFields()}<label for="comment">评论</label><textarea id="comment" name="content" maxlength="10000" required placeholder="写下你的评论..."></textarea><div class="form-bottom"><span>友善交流，分享你的真实体验</span><button class="primary">发表评论</button></div><p id="comment-error" class="error" role="alert"></p></form></section></article>`;
   if (p.document) renderDocument($('#post-document'), p.document);
   $('#edit-document').onclick = () => editSkill({
     id: p.id, title: p.title, categoryId: p.category_id,
     content: p.content, document: p.document
   });
-  $('#back').onclick = () => { state.post = null; state.selected = null; renderTree(); renderContent(); };
-  $('#back-category').onclick = () => { state.selected = p.category_id; state.post = null; renderTree(); renderContent(); };
-  $('#comment-form').onsubmit = async e => { e.preventDefault(); const form = new FormData(e.target); try { await api(`/posts/${p.id}/comments`, { method:'POST', body: { author:form.get('author'), content:form.get('content') } }); localStorage.setItem('skillhub-nickname', form.get('author').trim()); state.post = await api(`/posts/${p.id}`); await refresh(); } catch (error) { $('#comment-error').textContent = error.message; } };
+  const commentForm = $('#comment-form');
+  setupNamePicker(commentForm.querySelector('.name-picker'));
+  commentForm.onsubmit = async event => {
+    event.preventDefault();
+    const form = new FormData(commentForm);
+    try {
+      await api(`/posts/${p.id}/comments`, {
+        method: 'POST', body: { author: form.get('author'), content: form.get('content') }
+      });
+      state.post = await api(`/posts/${p.id}`);
+      await refresh();
+    } catch (error) {
+      $('#comment-error').textContent = error.message;
+    }
+  };
 }
 function dialog(title, fields, submit, saveLabel = '保存', afterSubmit = refresh) {
   $('#dialog-title').textContent = title; $('#dialog-fields').innerHTML = fields; $('#dialog-error').textContent = ''; $('#submit-dialog').textContent = saveLabel; $('#submit-dialog').disabled = false; $('#dialog').showModal();
@@ -68,6 +210,84 @@ function dialog(title, fields, submit, saveLabel = '保存', afterSubmit = refre
     }
   };
 }
+const presetNames = ['股东F', '股东M'];
+const nameStorageKey = 'skillhub-name-preferences';
+let sessionNames = { custom: [], selected: '' };
+
+function readNamePreference() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(nameStorageKey));
+    if (Array.isArray(saved?.custom) && typeof saved.selected === 'string') return saved;
+  } catch {
+    // The picker can still work for this session if storage is unavailable.
+  }
+  return sessionNames;
+}
+
+function rememberName(name, addCustom = false) {
+  const { custom } = readNamePreference();
+  const names = addCustom && !presetNames.includes(name) && !custom.includes(name) ? [...custom, name] : custom;
+  sessionNames = { custom: names, selected: name };
+  try { localStorage.setItem(nameStorageKey, JSON.stringify(sessionNames)); } catch {}
+}
+
+function nameOptions(selected) {
+  const preference = readNamePreference();
+  const names = [...new Set([...presetNames, ...preference.custom])];
+  selected ??= preference.selected;
+  return `<option value="" disabled${names.includes(selected) ? '' : ' selected'}>选择名称</option>` + names.map(name =>
+    `<option value="${escapeHTML(name)}"${name === selected ? ' selected' : ''}>${escapeHTML(name)}</option>`).join('');
+}
+
+function namePickerFields(label = '名称', selected) {
+  return `<div class="name-picker">
+    <label>${label}<select name="author" required>${nameOptions(selected)}</select></label>
+    <button type="button" class="secondary" data-add-name>＋ 新建名称</button>
+    <div class="name-create" data-name-create hidden>
+      <label>新名称<input data-name-input maxlength="40"></label>
+      <div class="name-create-actions">
+        <button type="button" class="secondary" data-name-cancel>取消</button>
+        <button type="button" class="primary" data-name-save>创建</button>
+      </div>
+      <p class="error" data-name-error role="alert"></p>
+    </div>
+  </div>`;
+}
+
+function setupNamePicker(picker) {
+  const select = picker.querySelector('select[name="author"]');
+  const panel = picker.querySelector('[data-name-create]');
+  const input = picker.querySelector('[data-name-input]');
+  const error = picker.querySelector('[data-name-error]');
+  const add = picker.querySelector('[data-add-name]');
+  function close() {
+    panel.hidden = true;
+    input.value = error.textContent = '';
+    select.focus();
+  }
+  function create() {
+    const name = input.value.trim();
+    if (!name) {
+      error.textContent = '请输入名称';
+      input.focus();
+      return;
+    }
+    rememberName(name, true);
+    select.innerHTML = nameOptions(name);
+    close();
+  }
+  select.onchange = () => rememberName(select.value);
+  add.onclick = () => { panel.hidden = false; input.focus(); };
+  picker.querySelector('[data-name-cancel]').onclick = close;
+  picker.querySelector('[data-name-save]').onclick = create;
+  input.onkeydown = event => {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    event.preventDefault();
+    create();
+  };
+  return select;
+}
+
 function categoryDialog(parentId = null) {
   dialog(parentId ? '新增子方向' : '新增大方向', '<label>方向名称<input name="name" maxlength="80" required placeholder="例如：设计、前端开发"></label>', async form => { await api('/categories', { method:'POST', body:{ name:form.get('name'), parentId } }); if (parentId) state.collapsed.delete(parentId); });
 }
@@ -104,15 +324,18 @@ function openPostDialog() {
     ${categoryPickerFields(state.selected)}
     <label>Skill 名称<input name="title" required maxlength="160" placeholder="给这篇分享起个标题"></label>
     <label>介绍<textarea name="content" required maxlength="20000" rows="4" placeholder="简单介绍一下这个 Skill"></textarea></label>
+    ${namePickerFields('发布人')}
   `, form => {
     const categoryId = Number(form.get('categoryId'));
     const title = form.get('title').trim();
     const content = form.get('content').trim();
     if (!state.categories.some(category => category.id === categoryId)) throw new Error('请选择所属方向');
     if (!title || !content) throw new Error('请填写 Skill 名称和介绍');
-    return { categoryId, title, content };
+    return { categoryId, title, content, author: form.get('author') };
   }, '确认', editSkill);
-  setupCategoryPicker($('#dialog-fields'), $('#submit-dialog'));
+  const fields = $('#dialog-fields');
+  setupCategoryPicker(fields, $('#submit-dialog'));
+  setupNamePicker(fields.querySelector('.name-picker'));
 }
 
 function setupCategoryPicker(container, submit) {
@@ -196,6 +419,8 @@ function editSkill(draft) {
       : await api('/posts', { method: 'POST', body });
     state.post = post;
     state.selected = post.category_id;
+    state.missing = false;
+    updatePageUrl(post.slug);
     renderTree();
     renderContent();
     refresh().catch(error => notify(error.message));
@@ -212,17 +437,15 @@ function setSidebarOpen(open) {
   if (open) $('#all').focus();
   else mobileMenu.focus();
 }
-$('#all').onclick = () => {
-  state.selected = null;
-  state.post = null;
-  setSidebarOpen(false);
-  renderTree();
-  renderContent();
-};
+$('#all').onclick = () => navigateDirection(null);
 $('#add-root').onclick = () => categoryDialog();
 $('#new-post').onclick = openPostDialog;
 $('#close-dialog').onclick = $('#cancel-dialog').onclick = () => $('#dialog').close();
-$('#search').oninput = e => { state.query = e.target.value.trim(); state.post = null; renderContent(); };
+$('#search').oninput = event => {
+  state.query = event.target.value.trim();
+  if (state.post || state.missing) navigateDirection(state.selected);
+  else renderContent();
+};
 mobileMenu.onclick = () => setSidebarOpen(!document.body.classList.contains('nav-open'));
 $('#sidebar-backdrop').onclick = () => setSidebarOpen(false);
 document.addEventListener('keydown', event => {
@@ -230,18 +453,35 @@ document.addEventListener('keydown', event => {
 });
 $('#tree').onclick = async e => {
   const toggle = e.target.closest('[data-toggle]'); if (toggle) { const id = Number(toggle.dataset.toggle); state.collapsed.has(id) ? state.collapsed.delete(id) : state.collapsed.add(id); return renderTree(); }
-  const category = e.target.closest('[data-category]'); if (category) { state.selected = Number(category.dataset.category); state.post = null; setSidebarOpen(false); renderTree(); return renderContent(); }
+  const category = e.target.closest('[data-category]');
+  if (category && isOrdinaryLinkClick(e)) {
+    e.preventDefault();
+    return navigateDirection(Number(category.dataset.category));
+  }
   const actions = e.target.closest('[data-actions]'); if (!actions) return;
   const id = Number(actions.dataset.actions), cat = state.categories.find(c => c.id === id);
   dialog(`管理「${cat.name}」`, `<div class="category-actions"><button type="button" id="add-child">＋ 新增子方向</button><button type="button" id="rename">✎ 重命名</button><button type="button" id="delete" class="danger">× 删除方向</button></div>`, async () => {});
   $('#submit-dialog').hidden = true;
   $('#add-child').onclick = () => { $('#dialog').close(); $('#submit-dialog').hidden = false; categoryDialog(id); };
   $('#rename').onclick = () => { $('#dialog').close(); $('#submit-dialog').hidden = false; dialog('重命名方向', `<label>方向名称<input name="name" maxlength="80" required value="${escapeHTML(cat.name)}"></label>`, async form => api(`/categories/${id}`, { method:'PATCH', body:{ name:form.get('name') } })); };
-  $('#delete').onclick = async () => { if (!confirm(`确定删除「${cat.name}」？`)) return; try { await api(`/categories/${id}`, { method:'DELETE' }); $('#dialog').close(); $('#submit-dialog').hidden = false; if (state.selected === id) state.selected = null; await refresh(); } catch (error) { $('#dialog-error').textContent = error.message; } };
+  $('#delete').onclick = async () => { if (!confirm(`确定删除「${cat.name}」？`)) return; try { await api(`/categories/${id}`, { method:'DELETE' }); $('#dialog').close(); $('#submit-dialog').hidden = false; if (state.selected === id) { state.selected = null; updatePageUrl(null, true); } await refresh(); } catch (error) { $('#dialog-error').textContent = error.message; } };
 };
 $('#dialog').addEventListener('close', () => { $('#submit-dialog').hidden = false; });
-$('#content').onclick = async e => { const row = e.target.closest('[data-post]'); if (row) { try { state.post = await api(`/posts/${row.dataset.post}`); state.selected = state.post.category_id; renderTree(); renderContent(); } catch (error) { notify(error.message); } } };
-refresh().catch(error => notify(`连接失败：${error.message}`));
+$('#content').onclick = async e => {
+  const crumb = e.target.closest('[data-breadcrumb]');
+  if (crumb) return navigateDirection(Number(crumb.dataset.breadcrumb) || null);
+  const row = e.target.closest('[data-post]');
+  if (row && isOrdinaryLinkClick(e)) {
+    e.preventDefault();
+    navigatePost(Number(row.dataset.post)).catch(error => notify(error.message));
+  }
+};
+
+window.addEventListener('popstate', () => {
+  if (leaveDocumentEditor && !leaveDocumentEditor()) return;
+  restorePageFromUrl()?.catch(error => notify(error.message));
+});
+refresh(true).catch(error => notify(`连接失败：${error.message}`));
 
 const directionTree = $('#tree');
 let directionDrag;

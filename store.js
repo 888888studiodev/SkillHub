@@ -1,4 +1,5 @@
 const { DatabaseSync } = require('node:sqlite');
+const { pinyin } = require('pinyin-pro');
 const { prepareDocument } = require('./document');
 
 function required(value, label, max = 200) {
@@ -11,19 +12,51 @@ function createStore(path) {
     CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES categories(id));
     CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, category_id INTEGER NOT NULL REFERENCES categories(id), title TEXT NOT NULL, author TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL REFERENCES posts(id), author TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);`);
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    if (!db.prepare('PRAGMA table_info(posts)').all().some(column => column.name === 'document')) {
-      db.exec('ALTER TABLE posts ADD COLUMN document TEXT');
+  function transaction(write) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = write();
+      db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
-    if (!db.prepare('PRAGMA table_info(categories)').all().some(column => column.name === 'position')) {
-      db.exec('ALTER TABLE categories ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
-    }
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
   }
+
+  let slugInUse;
+  function allocateSlug(name, fallback) {
+    const initials = pinyin(name.normalize('NFKC'), { pattern: 'first', toneType: 'none', type: 'array' })
+      .join('').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 72).replace(/^-+|-+$/g, '');
+    const base = initials || fallback;
+    let slug = base;
+    for (let suffix = 2; slug === 'api' || slugInUse.get(slug, slug); suffix++) {
+      slug = `${base}-${suffix}`;
+    }
+    return slug;
+  }
+
+  transaction(() => {
+    const postColumns = db.prepare('PRAGMA table_info(posts)').all().map(column => column.name);
+    const categoryColumns = db.prepare('PRAGMA table_info(categories)').all().map(column => column.name);
+    if (!postColumns.includes('document')) db.exec('ALTER TABLE posts ADD COLUMN document TEXT');
+    if (!categoryColumns.includes('position')) db.exec('ALTER TABLE categories ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
+    if (!postColumns.includes('slug')) db.exec('ALTER TABLE posts ADD COLUMN slug TEXT');
+    if (!categoryColumns.includes('slug')) db.exec('ALTER TABLE categories ADD COLUMN slug TEXT');
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS category_slugs ON categories(slug);
+      CREATE UNIQUE INDEX IF NOT EXISTS post_slugs ON posts(slug);
+    `);
+    slugInUse = db.prepare('SELECT slug FROM categories WHERE slug=? UNION ALL SELECT slug FROM posts WHERE slug=? LIMIT 1');
+    const setCategorySlug = db.prepare('UPDATE categories SET slug=? WHERE id=?');
+    for (const category of db.prepare('SELECT id, name FROM categories WHERE slug IS NULL ORDER BY id').all()) {
+      setCategorySlug.run(allocateSlug(category.name, 'direction'), category.id);
+    }
+    const setPostSlug = db.prepare('UPDATE posts SET slug=? WHERE id=?');
+    for (const post of db.prepare('SELECT id, title FROM posts WHERE slug IS NULL ORDER BY id').all()) {
+      setPostSlug.run(allocateSlug(post.title, 'skill'), post.id);
+    }
+  });
 
   const getCategory = db.prepare('SELECT * FROM categories WHERE id=?');
   const listCategories = db.prepare('SELECT * FROM categories ORDER BY position, id');
@@ -35,12 +68,15 @@ function createStore(path) {
     createCategory(name, parentId) {
       name = required(name, '方向名称', 80);
       parentId = parentId || null;
-      const result = db.prepare(`
-        INSERT INTO categories (name, parent_id, position)
-        SELECT ?, ?, COALESCE(MAX(position) + 1, 0)
-        FROM categories WHERE parent_id IS ?
-      `).run(name, parentId, parentId);
-      return getCategory.get(result.lastInsertRowid);
+      return transaction(() => {
+        const slug = allocateSlug(name, 'direction');
+        const result = db.prepare(`
+          INSERT INTO categories (name, parent_id, position, slug)
+          SELECT ?, ?, COALESCE(MAX(position) + 1, 0), ?
+          FROM categories WHERE parent_id IS ?
+        `).run(name, parentId, slug, parentId);
+        return getCategory.get(result.lastInsertRowid);
+      });
     },
     renameCategory(id, name) {
       const result = db.prepare('UPDATE categories SET name=? WHERE id=?').run(required(name, '方向名称', 80), id);
@@ -79,7 +115,7 @@ function createStore(path) {
       if (db.prepare('SELECT 1 FROM categories WHERE parent_id=?').get(id) || db.prepare('SELECT 1 FROM posts WHERE category_id=?').get(id)) throw new Error('请先移走或删除该方向下的子方向和帖子');
       if (!db.prepare('DELETE FROM categories WHERE id=?').run(id).changes) throw new Error('方向不存在');
     },
-    posts: () => db.prepare('SELECT posts.id, posts.category_id, posts.title, posts.author, posts.source, posts.content, posts.created_at, categories.name AS category_name, (SELECT count(*) FROM comments WHERE post_id=posts.id) AS comment_count FROM posts JOIN categories ON categories.id=posts.category_id ORDER BY posts.id DESC').all(),
+    posts: () => db.prepare('SELECT posts.id, posts.category_id, posts.title, posts.slug, posts.author, posts.source, posts.content, posts.created_at, categories.name AS category_name, (SELECT count(*) FROM comments WHERE post_id=posts.id) AS comment_count FROM posts JOIN categories ON categories.id=posts.category_id ORDER BY posts.id DESC').all(),
     createPost(data) {
       const title = required(data.title, '标题', 160);
       const rich = data.document !== undefined;
@@ -89,8 +125,12 @@ function createStore(path) {
         : { content: required(data.content, '内容', 20000), encoded: null };
       const source = typeof data.source === 'string' ? data.source.trim() : '';
       if (source) { const url = new URL(source); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('请输入有效的网址'); }
-      const result = db.prepare('INSERT INTO posts(category_id,title,author,source,content,document) VALUES (?,?,?,?,?,?)').run(data.categoryId, title, author, source, content, encoded);
-      return { id: Number(result.lastInsertRowid) };
+      return transaction(() => {
+        const slug = allocateSlug(title, 'skill');
+        const result = db.prepare('INSERT INTO posts(category_id,title,author,source,content,document,slug) VALUES (?,?,?,?,?,?,?)')
+          .run(data.categoryId, title, author, source, content, encoded, slug);
+        return { id: Number(result.lastInsertRowid) };
+      });
     },
     updatePostDocument(id, document, { title, categoryId } = {}) {
       const { content, encoded } = prepareDocument(document);
