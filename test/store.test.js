@@ -126,3 +126,25 @@ test('existing directions and posts get links when the database is upgraded', t 
     store.close();
   }
 });
+
+test('deleting a post removes its comments and leaves its former link retired', () => {
+  const store = createStore(':memory:');
+  const category = store.createCategory('开发', null);
+  const input = { categoryId: category.id, title: '删除测试', author: '股东F', content: '介绍' };
+  const { id } = store.createPost(input);
+  const originalSlug = store.getPost(id).slug;
+  store.createComment(id, '股东M', '评论');
+  const other = store.createPost({ ...input, title: '保留帖子' });
+  store.createComment(other.id, '股东F', '保留');
+
+  assert.equal(store.deletePost(id), true);
+  assert.equal(store.deletePost(id), false);
+  assert.equal(store.getPost(id), null);
+  assert.deepEqual(store.posts().map(post => post.id), [other.id]);
+  assert.equal(store.getPost(other.id).comments.length, 1);
+  assert.equal(store.deletePost(other.id), true);
+  const recreated = store.createPost(input);
+  assert.ok(recreated.id > other.id);
+  assert.notEqual(store.getPost(recreated.id).slug, originalSlug);
+  store.close();
+});

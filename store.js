@@ -11,7 +11,8 @@ function createStore(path) {
   db.exec(`PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;
     CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES categories(id));
     CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, category_id INTEGER NOT NULL REFERENCES categories(id), title TEXT NOT NULL, author TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL REFERENCES posts(id), author TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);`);
+    CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL REFERENCES posts(id), author TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS deleted_post_links (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE);`);
   function transaction(write) {
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -30,7 +31,7 @@ function createStore(path) {
       .join('').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 72).replace(/^-+|-+$/g, '');
     const base = initials || fallback;
     let slug = base;
-    for (let suffix = 2; slug === 'api' || slugInUse.get(slug, slug); suffix++) {
+    for (let suffix = 2; slug === 'api' || slugInUse.get(slug, slug, slug); suffix++) {
       slug = `${base}-${suffix}`;
     }
     return slug;
@@ -47,7 +48,12 @@ function createStore(path) {
       CREATE UNIQUE INDEX IF NOT EXISTS category_slugs ON categories(slug);
       CREATE UNIQUE INDEX IF NOT EXISTS post_slugs ON posts(slug);
     `);
-    slugInUse = db.prepare('SELECT slug FROM categories WHERE slug=? UNION ALL SELECT slug FROM posts WHERE slug=? LIMIT 1');
+    slugInUse = db.prepare(`
+      SELECT slug FROM categories WHERE slug=?
+      UNION ALL SELECT slug FROM posts WHERE slug=?
+      UNION ALL SELECT slug FROM deleted_post_links WHERE slug=?
+      LIMIT 1
+    `);
     const setCategorySlug = db.prepare('UPDATE categories SET slug=? WHERE id=?');
     for (const category of db.prepare('SELECT id, name FROM categories WHERE slug IS NULL ORDER BY id').all()) {
       setCategorySlug.run(allocateSlug(category.name, 'direction'), category.id);
@@ -127,9 +133,15 @@ function createStore(path) {
       if (source) { const url = new URL(source); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('请输入有效的网址'); }
       return transaction(() => {
         const slug = allocateSlug(title, 'skill');
-        const result = db.prepare('INSERT INTO posts(category_id,title,author,source,content,document,slug) VALUES (?,?,?,?,?,?,?)')
-          .run(data.categoryId, title, author, source, content, encoded, slug);
-        return { id: Number(result.lastInsertRowid) };
+        const { id } = db.prepare(`
+          SELECT COALESCE(MAX(id), 0) + 1 AS id FROM (
+            SELECT MAX(id) AS id FROM posts
+            UNION ALL SELECT MAX(id) AS id FROM deleted_post_links
+          )
+        `).get();
+        db.prepare('INSERT INTO posts(id,category_id,title,author,source,content,document,slug) VALUES (?,?,?,?,?,?,?,?)')
+          .run(id, data.categoryId, title, author, source, content, encoded, slug);
+        return { id };
       });
     },
     updatePostDocument(id, document, { title, categoryId } = {}) {
@@ -149,6 +161,16 @@ function createStore(path) {
       const post = db.prepare('SELECT posts.*, categories.name AS category_name FROM posts JOIN categories ON categories.id=posts.category_id WHERE posts.id=?').get(id);
       if (!post) return null;
       return { ...post, document: post.document && JSON.parse(post.document), comments: db.prepare('SELECT * FROM comments WHERE post_id=? ORDER BY id').all(id) };
+    },
+    deletePost(id) {
+      return transaction(() => {
+        const post = db.prepare('SELECT slug FROM posts WHERE id=?').get(id);
+        if (!post) return false;
+        db.prepare('INSERT INTO deleted_post_links (id, slug) VALUES (?, ?)').run(id, post.slug);
+        db.prepare('DELETE FROM comments WHERE post_id=?').run(id);
+        db.prepare('DELETE FROM posts WHERE id=?').run(id);
+        return true;
+      });
     },
     createComment(postId, author, content) {
       const result = db.prepare('INSERT INTO comments(post_id,author,content) VALUES (?,?,?)').run(postId, required(author, '昵称', 40), required(content, '评论', 10000));

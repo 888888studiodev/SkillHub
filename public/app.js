@@ -1,6 +1,7 @@
 const state = { categories: [], posts: [], selected: null, post: null, query: '', missing: false, collapsed: new Set() };
 const pageBase = new URL('.', location.href);
 let navigationRequest = 0;
+let stopPostOutline;
 const $ = selector => document.querySelector(selector);
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
 const date = value => new Date(value.replace(' ', 'T') + 'Z').toLocaleString('zh-CN', { year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
@@ -114,6 +115,8 @@ function restorePageFromUrl() {
 }
 
 function renderContent() {
+  stopPostOutline?.();
+  stopPostOutline = null;
   if (state.post) return renderPost();
   if (state.missing) {
     document.title = '页面不存在 — SkillHub';
@@ -171,8 +174,42 @@ function renderContent() {
 function renderPost() {
   const p = state.post;
   document.title = `${p.title} — SkillHub`;
-  $('#content').innerHTML = `<article class="page detail">${breadcrumbs(p.category_id, p.title)}<div class="detail-title"><h1>${escapeHTML(p.title)}</h1><button class="secondary" id="edit-document">编辑文档</button></div><div class="author-line">${avatar(p.author)}<div><strong>${escapeHTML(p.author)}</strong><span>${date(p.created_at)}</span></div></div>${p.source ? `<div class="source">↗ <span>来源</span><a href="${escapeHTML(p.source)}" target="_blank" rel="noopener noreferrer">${escapeHTML(p.source)}</a></div>` : ''}<div id="post-document" class="post-body${p.document ? ' rich-document' : ''}">${p.document ? '' : escapeHTML(p.content)}</div><section class="comments"><div class="comment-heading"><h2>评论 <span>${p.comments.length}</span></h2><p>分享你的使用心得和想法</p></div>${p.comments.length ? p.comments.map(c => `<div class="comment">${avatar(c.author)}<div><div class="comment-meta"><strong>${escapeHTML(c.author)}</strong><time>${date(c.created_at)}</time></div><p>${escapeHTML(c.content)}</p></div></div>`).join('') : '<p class="no-comments">还没有评论，来分享第一个想法吧。</p>'}<form id="comment-form" class="comment-form">${namePickerFields()}<label for="comment">评论</label><textarea id="comment" name="content" maxlength="10000" required placeholder="写下你的评论..."></textarea><div class="form-bottom"><span>友善交流，分享你的真实体验</span><button class="primary">发表评论</button></div><p id="comment-error" class="error" role="alert"></p></form></section></article>`;
+  $('#content').innerHTML = `
+    <div class="page detail">
+      ${breadcrumbs(p.category_id, p.title)}
+      <div class="post-layout">
+        <article class="post-article">
+          <div class="detail-title">
+            <h1 id="post-title">${escapeHTML(p.title)}</h1>
+            <button class="secondary" id="edit-document">编辑文档</button>
+          </div>
+          <div class="author-line">${avatar(p.author)}<div><strong>${escapeHTML(p.author)}</strong><span>${date(p.created_at)}</span></div></div>
+          ${p.source ? `<div class="source">↗ <span>来源</span><a href="${escapeHTML(p.source)}" target="_blank" rel="noopener noreferrer">${escapeHTML(p.source)}</a></div>` : ''}
+          <div id="post-document" class="post-body${p.document ? ' rich-document' : ''}">${p.document ? '' : escapeHTML(p.content)}</div>
+          <section class="comments" id="post-comments">
+            <div class="comment-heading"><h2>评论 <span>${p.comments.length}</span></h2></div>
+            ${p.comments.length ? p.comments.map(c => `
+              <div class="comment">
+                ${avatar(c.author)}
+                <div>
+                  <div class="comment-meta"><strong>${escapeHTML(c.author)}</strong><time>${date(c.created_at)}</time></div>
+                  <p>${escapeHTML(c.content)}</p>
+                </div>
+              </div>`).join('') : '<p class="no-comments">还没有评论，来分享第一个想法吧。</p>'}
+            <form id="comment-form" class="comment-form">
+              ${namePickerFields()}
+              <label for="comment">评论</label>
+              <textarea id="comment" name="content" maxlength="10000" required placeholder="写下你的评论..."></textarea>
+              <div class="form-bottom"><button class="primary">发表评论</button></div>
+              <p id="comment-error" class="error" role="alert"></p>
+            </form>
+          </section>
+        </article>
+        <nav class="post-outline" id="post-outline" aria-label="帖子目录"></nav>
+      </div>
+    </div>`;
   if (p.document) renderDocument($('#post-document'), p.document);
+  stopPostOutline = trackPostOutline(p.title);
   $('#edit-document').onclick = () => editSkill({
     id: p.id, title: p.title, categoryId: p.category_id,
     content: p.content, document: p.document
@@ -193,6 +230,74 @@ function renderPost() {
     }
   };
 }
+function trackPostOutline(title) {
+  const outline = $('#post-outline');
+  const headings = [...$('#post-document').querySelectorAll('h1, h2, h3, h4, h5, h6')]
+    .filter(heading => heading.textContent.trim());
+  const shallowest = Math.min(6, ...headings.map(heading => Number(heading.tagName[1])));
+  const items = [
+    { target: $('#post-title'), label: title, depth: 0 },
+    ...headings.map(target => ({
+      target, label: target.textContent.trim(), depth: Number(target.tagName[1]) - shallowest + 1
+    })),
+    { target: $('#post-comments'), label: '评论', depth: 0 }
+  ];
+  outline.innerHTML = `<ol>${items.map(({ label, depth }, index) => `
+    <li><button type="button" data-outline-index="${index}" style="--outline-depth:${depth}" title="${escapeHTML(label)}">${escapeHTML(label)}</button></li>
+  `).join('')}</ol>`;
+
+  for (const { target } of items) target.classList.add('outline-target');
+  const buttons = outline.querySelectorAll('button');
+  const scrollTarget = document.scrollingElement;
+  const listeners = new AbortController();
+  let active = -1;
+  let frame = 0;
+
+  function markActive(index) {
+    if (index === active) return;
+    buttons[active]?.removeAttribute('aria-current');
+    const button = buttons[index];
+    button.setAttribute('aria-current', 'location');
+    active = index;
+    const bounds = outline.getBoundingClientRect();
+    const row = button.getBoundingClientRect();
+    if (row.top < bounds.top) outline.scrollTop += row.top - bounds.top;
+    else if (row.bottom > bounds.bottom) outline.scrollTop += row.bottom - bounds.bottom;
+  }
+
+  function update() {
+    frame = 0;
+    if (!outline.getClientRects().length) return;
+    const atBottom = scrollTarget.scrollTop > 0 &&
+      scrollTarget.scrollTop + scrollTarget.clientHeight >= scrollTarget.scrollHeight - 2;
+    let index = 0;
+    for (let i = 1; i < items.length; i++) {
+      if (items[i].target.getBoundingClientRect().top > 90) break;
+      index = i;
+    }
+    markActive(atBottom ? items.length - 1 : index);
+  }
+  function schedule() {
+    if (!frame) frame = requestAnimationFrame(update);
+  }
+  outline.addEventListener('click', event => {
+    const button = event.target.closest('[data-outline-index]');
+    if (!button) return;
+    const index = Number(button.dataset.outlineIndex);
+    items[index].target.scrollIntoView({ block: 'start' });
+    markActive(index);
+  }, { signal: listeners.signal });
+  window.addEventListener('scroll', schedule, { passive: true, signal: listeners.signal });
+  window.addEventListener('resize', schedule, { signal: listeners.signal });
+  $('#post-document').addEventListener('load', schedule, { capture: true, signal: listeners.signal });
+  update();
+
+  return () => {
+    listeners.abort();
+    cancelAnimationFrame(frame);
+  };
+}
+
 function dialog(title, fields, submit, saveLabel = '保存', afterSubmit = refresh) {
   $('#dialog-title').textContent = title; $('#dialog-fields').innerHTML = fields; $('#dialog-error').textContent = ''; $('#submit-dialog').textContent = saveLabel; $('#submit-dialog').disabled = false; $('#dialog').showModal();
   $('#dialog-form').onsubmit = async e => {
@@ -423,6 +528,13 @@ function editSkill(draft) {
     updatePageUrl(post.slug);
     renderTree();
     renderContent();
+    refresh().catch(error => notify(error.message));
+  }, async () => {
+    await api(`/posts/${draft.id}`, { method: 'DELETE' });
+    state.posts = state.posts.filter(post => post.id !== draft.id);
+    const category = state.categories.find(item => item.id === draft.categoryId);
+    updatePageUrl(category?.slug, true);
+    navigateDirection(category?.id ?? null, false);
     refresh().catch(error => notify(error.message));
   });
 }

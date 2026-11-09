@@ -104,7 +104,7 @@ function insertDocumentItem(editor, type) {
 
 let leaveDocumentEditor;
 
-function openDocumentEditor(draft, save) {
+function openDocumentEditor(draft, save, remove) {
   const originalUrl = location.href;
   const layout = $('.layout');
   const workspace = $('#document-workspace');
@@ -114,6 +114,7 @@ function openDocumentEditor(draft, save) {
     <header class="editor-header">
       <div id="editor-path"></div>
       <div class="editor-actions">
+        ${draft.id ? '<button type="button" class="secondary editor-delete" id="editor-delete">删除</button>' : ''}
         <button type="button" class="secondary" id="editor-cancel">取消</button>
         <button type="button" class="primary" id="editor-save">${draft.id ? '保存更改' : '保存并发布'}</button>
       </div>
@@ -194,6 +195,7 @@ function openDocumentEditor(draft, save) {
 
   const cancel = $('#editor-cancel');
   const saveButton = $('#editor-save');
+  const deleteButton = $('#editor-delete');
   const error = $('#editor-error');
   const titleField = workspace.querySelector('input[name="title"]');
   const categoryField = workspace.querySelector('select[name="categoryId"]');
@@ -237,7 +239,29 @@ function openDocumentEditor(draft, save) {
     closeEditor();
     navigateDirection(Number(crumb.dataset.breadcrumb) || null);
   };
-  saveButton.onclick = async () => {
+  async function runEditAction(action) {
+    const saveWasDisabled = saveButton.disabled;
+    cancel.disabled = saveButton.disabled = true;
+    if (deleteButton) deleteButton.disabled = true;
+    error.textContent = '';
+    try {
+      await action();
+      closeEditor();
+    } catch (failure) {
+      error.textContent = failure.message;
+      cancel.disabled = false;
+      saveButton.disabled = saveWasDisabled;
+      if (deleteButton) deleteButton.disabled = false;
+    }
+  }
+
+  if (deleteButton) {
+    deleteButton.onclick = () => {
+      if (!cancel.disabled && confirm('删除这篇帖子及其评论？')) runEditAction(remove);
+    };
+  }
+  saveButton.onclick = () => {
+    if (cancel.disabled) return;
     const title = titleField.value.trim();
     const categoryId = Number(categoryField.value);
     if (!title || !categoryId) {
@@ -246,16 +270,8 @@ function openDocumentEditor(draft, save) {
       return;
     }
     if (authorField && !authorField.reportValidity()) return;
-    cancel.disabled = saveButton.disabled = true;
-    error.textContent = '';
-    try {
-      const post = { title, categoryId, document: editor.getContents() };
-      if (authorField) post.author = authorField.value;
-      await save(post);
-      closeEditor();
-    } catch (failure) {
-      error.textContent = failure.message;
-      cancel.disabled = saveButton.disabled = false;
-    }
+    const post = { title, categoryId, document: editor.getContents() };
+    if (authorField) post.author = authorField.value;
+    runEditAction(() => save(post));
   };
 }

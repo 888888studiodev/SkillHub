@@ -104,6 +104,12 @@ const server = http.createServer(async (req, res) => {
         if (!store.updatePostDocument(Number(parts[2]), body.document, body)) return send(404, { error: '帖子不存在' });
         return send(200, store.getPost(Number(parts[2])));
       }
+      if (req.method === 'DELETE' && parts[2] && !parts[3]) {
+        const id = Number(parts[2]);
+        if (!Number.isSafeInteger(id) || id < 1) return send(400, { error: '帖子编号无效' });
+        store.deletePost(id);
+        return send(200, { ok: true });
+      }
       if (req.method === 'GET' && parts[2] && !parts[3]) { const post = store.getPost(Number(parts[2])); return send(post ? 200 : 404, post || { error: '帖子不存在' }); }
       if (req.method === 'POST' && parts[2] && parts[3] === 'comments') return send(201, store.createComment(Number(parts[2]), body.author, body.content));
     }
