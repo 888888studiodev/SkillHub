@@ -16,7 +16,7 @@ npm start
 
 ```dotenv
 HOST=127.0.0.1
-SKILLHUB_API_ORIGIN=https://emw3-dashboard.win/skillhub/
+SKILLHUB_API_ORIGIN=https://skillhub.129-80-166-116.sslip.io/
 ```
 
 在此模式下，页面、样式和脚本使用本地代码。浏览、发帖、评论和目录操作使用同一套云端 API，因此本地改动数据会同步显示在云端网站上。云端部署可通过反向代理映射到子路径，代理应剥离路径前缀，并转发整个路径下的页面、静态资源和 API。
