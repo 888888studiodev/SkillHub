@@ -1,1 +1,41 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SkillHub — 团队的 Skill 知识库</title><link rel="stylesheet" href="quill.snow.css"><link rel="stylesheet" href="style.css"><script src="quill.js" defer></script><script src="editor.js" defer></script><script src="app.js" defer></script></head><body><div class="layout"><aside class="sidebar" id="sidebar"><div class="brand"><span class="brand-icon">◇</span><span>SkillHub</span></div><div class="sidebar-body"><button class="all selected" id="all">⌂ <span>主页</span></button><div class="tree-heading">方向 <button id="add-root" aria-label="新增大方向">＋</button></div><nav id="tree" aria-label="方向目录"></nav></div></aside><button type="button" id="sidebar-backdrop" aria-label="收起目录" tabindex="-1"></button><main><header><button id="mobile-menu" aria-label="打开目录" aria-controls="sidebar" aria-expanded="false">☰</button><div class="search"><span>⌕</span><input id="search" placeholder="搜索方向、话题或内容..." aria-label="搜索"></div><button class="primary share" id="new-post">＋ 分享 Skill</button></header><div id="content"></div></main></div><section id="document-workspace" hidden></section><dialog id="dialog"><form id="dialog-form"><div class="dialog-head"><h2 id="dialog-title"></h2><button type="button" id="close-dialog" aria-label="关闭">×</button></div><div id="dialog-fields"></div><p class="error" id="dialog-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary" id="cancel-dialog">取消</button><button class="primary" id="submit-dialog">保存</button></div></form></dialog><div id="toast" role="status"></div></body></html>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SkillHub — 团队的 Skill 知识库</title><link rel="stylesheet" href="quill.snow.css"><link rel="stylesheet" href="style.css"><script src="quill.js" defer></script><script src="editor.js" defer></script><script src="app.js" defer></script></head><body>
+<svg class="schematic-symbols" aria-hidden="true" width="0" height="0">
+  <defs>
+    <symbol id="sch-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8M5.5 10v10h4v-6h5v6h4V10"/></symbol>
+    <symbol id="sch-folder" viewBox="0 0 24 24"><path d="M3 5h7l2 3h9v11H3z"/><path d="M3 10h18"/></symbol>
+    <symbol id="sch-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5 5"/></symbol>
+    <symbol id="sch-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="sch-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="15" cy="12" r="2"/></symbol>
+    <symbol id="sch-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="sch-comments" viewBox="0 0 24 24"><path d="M4 4h16v11h-8l-4 4v-4H4z"/><path d="M8 8h8m-8 4h5"/></symbol>
+    <symbol id="sch-chip" viewBox="0 0 48 48">
+      <path d="m24 12 11 6v12l-11 6-11-6V18zM13 18l11 6 11-6m-11 6v12M24 4v8m0 24v8M4 14l9 4m22 12 9 4M4 34l9-4m22-12 9-4"/>
+      <circle cx="24" cy="4" r="2"/><circle cx="24" cy="44" r="2"/><circle cx="4" cy="14" r="2"/><circle cx="44" cy="34" r="2"/><circle cx="4" cy="34" r="2"/><circle cx="44" cy="14" r="2"/>
+    </symbol>
+    <symbol id="sch-card-traces" viewBox="0 0 320 150">
+      <path d="M320 4h-70l-27 27h-52l-18 18h-37M320 16h-62l-25 25h-54l-21 21h-71M320 32h-49l-25 25h-39l-20 21h-41M320 47h-43l-18 18h-35l-25 27h-48M320 111h-27l-17-17h-30l-33 33h-46M320 124h-39l-11-11h-18l-31 31h-84M320 137h-43l-12-10h-7l-23 23"/>
+      <path d="M290 0l-28 27m-48 85v-12l17-18h28l14-14h47m-12 82v-9m-191 9v-20l-16-15H65m80 35v-24l-24-24H94"/>
+      <circle cx="116" cy="49" r="3"/><circle cx="87" cy="62" r="3"/><circle cx="146" cy="78" r="3"/><circle cx="151" cy="92" r="3"/><circle cx="167" cy="127" r="3"/><circle cx="137" cy="144" r="3"/><circle cx="65" cy="115" r="3"/><circle cx="94" cy="102" r="3"/>
+    </symbol>
+    <symbol id="sch-rack" viewBox="0 0 95 150">
+      <path d="M4 4h87v135H4zM10 10h75v123H10zM12 139v8h10v-8m51 0v8h10v-8"/>
+      <path d="M16 18h63v17H16zm0 23h63v17H16zm0 23h63v17H16zm0 23h63v17H16zm0 23h63v17H16z"/>
+      <path d="M21 24h4m3 0h4m3 0h4m3 0h4m3 0h4m-32 5h4m3 0h4m3 0h4m3 0h4m3 0h4m-32 18h4m3 0h4m3 0h4m3 0h4m3 0h4m-32 5h4m3 0h4m3 0h4m3 0h4m3 0h4m-32 18h4m3 0h4m3 0h4m3 0h4m3 0h4m-32 5h4m3 0h4m3 0h4m3 0h4m3 0h4m-32 18h4m3 0h4m3 0h4m3 0h4m3 0h4m-32 5h4m3 0h4m3 0h4m3 0h4m3 0h4m-32 18h4m3 0h4m3 0h4m3 0h4m3 0h4m-32 5h4m3 0h4m3 0h4m3 0h4m3 0h4"/>
+      <circle cx="72" cy="26" r="2"/><circle cx="72" cy="49" r="2"/><circle cx="72" cy="72" r="2"/><circle cx="72" cy="95" r="2"/><circle cx="72" cy="118" r="2"/>
+    </symbol>
+  </defs>
+</svg>
+<div class="layout"><aside class="sidebar" id="sidebar"><div class="brand"><span>SkillHub</span></div><div class="sidebar-body"><button class="all selected" id="all"><svg class="schematic-icon" aria-hidden="true"><use href="#sch-home"/></svg><span>主页</span></button><div class="tree-heading">方向 <button id="add-root" aria-label="新增大方向"><svg class="schematic-icon" aria-hidden="true"><use href="#sch-plus"/></svg></button></div><nav id="tree" aria-label="方向目录"></nav></div></aside><button type="button" id="sidebar-backdrop" aria-label="收起目录" tabindex="-1"></button><main>
+  <svg class="blueprint-board" viewBox="0 0 900 460" aria-hidden="true">
+    <path d="M0 54h30l22 22v118l70 70h44M0 78h18l22 22v103l64 64h35M0 105h11l18 19v94l61 61h28M0 141h10v90l62 62h18M0 349h43l61-61h65M0 364h49l65-65h89M0 383h61l72-72h105M0 400h73l77-77h107M0 418h85l83-83h112M48 460v-39m18 39v-43m26 43v-35m17 35v-45"/>
+    <circle cx="166" cy="264" r="3"/><circle cx="139" cy="267" r="3"/><circle cx="118" cy="279" r="3"/><circle cx="90" cy="293" r="3"/><circle cx="169" cy="288" r="3"/><circle cx="203" cy="299" r="3"/><circle cx="238" cy="311" r="3"/><circle cx="257" cy="323" r="3"/><circle cx="280" cy="335" r="3"/>
+    <path d="M900 12h-92l-34 34h-75m201-18h-81l-33 32h-48M900 43h-69l-28 29h-37m134-15h-59l-29 31h-24M900 289h-17l-25 24m42-7h-12l-16 16h-14M740 359h27m-27 12h27"/>
+    <circle cx="699" cy="46" r="3"/><circle cx="738" cy="60" r="3"/><circle cx="766" cy="72" r="3"/><circle cx="788" cy="88" r="3"/>
+    <use href="#sch-rack" x="645" y="292" width="95" height="150"/>
+    <use href="#sch-rack" x="767" y="292" width="95" height="150"/>
+  </svg>
+  <header><button id="mobile-menu" aria-label="打开目录" aria-controls="sidebar" aria-expanded="false"><svg class="schematic-icon" aria-hidden="true"><use href="#sch-menu"/></svg></button><div class="search"><svg class="schematic-icon" aria-hidden="true"><use href="#sch-search"/></svg><input id="search" placeholder="搜索方向、话题或内容..." aria-label="搜索"></div><button class="primary share" id="new-post" aria-label="分享 Skill"><svg class="schematic-icon" aria-hidden="true"><use href="#sch-plus"/></svg><span>分享 Skill</span></button></header><div id="content"></div></main>
+  <svg class="blueprint-trace" id="blueprint-trace" aria-hidden="true" hidden>
+    <path class="trace-wire"/><path class="trace-signal"/><rect class="trace-port" width="8" height="8"/>
+  </svg>
+</div><section id="document-workspace" hidden></section><dialog id="dialog"><form id="dialog-form"><div class="dialog-head"><h2 id="dialog-title"></h2><button type="button" id="close-dialog" aria-label="关闭">×</button></div><div id="dialog-fields"></div><p class="error" id="dialog-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary" id="cancel-dialog">取消</button><button class="primary" id="submit-dialog">保存</button></div></form></dialog><div id="toast" role="status"></div></body></html>

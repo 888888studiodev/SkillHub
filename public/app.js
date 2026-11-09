@@ -6,6 +6,39 @@ const $ = selector => document.querySelector(selector);
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
 const date = value => new Date(value.replace(' ', 'T') + 'Z').toLocaleString('zh-CN', { year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
 const avatar = name => `<span class="avatar">${escapeHTML(name.slice(0, 1))}</span>`;
+const schematicIcon = name => `<svg class="schematic-icon" aria-hidden="true"><use href="#sch-${name}"/></svg>`;
+let traceFrame = 0;
+
+function scheduleBlueprintTrace() {
+  if (traceFrame) return;
+  traceFrame = requestAnimationFrame(() => {
+    traceFrame = 0;
+    const trace = $('#blueprint-trace');
+    const source = $('#tree .tree-row.active') || $('#all.selected');
+    const target = $('#content .post-row, #content .post-article') || $('#content .post-status');
+    trace.toggleAttribute('hidden', !source || !target);
+    if (!source || !target) return;
+
+    const layout = $('.layout').getBoundingClientRect();
+    const start = source.getBoundingClientRect();
+    const end = target.getBoundingClientRect();
+    const x1 = Math.round(start.right - layout.left);
+    const x2 = Math.round(end.left - layout.left);
+    const y1 = Math.round(start.top - layout.top + start.height / 2);
+    const y2 = Math.round(end.top - layout.top + Math.min(52, end.height / 2));
+    const bend = Math.round(x1 + (x2 - x1) * 0.56);
+    const curve = Math.min(7, Math.abs(y2 - y1) / 2);
+    const direction = Math.sign(y2 - y1);
+    const path = `M ${x1} ${y1} H ${bend - curve}
+      Q ${bend} ${y1} ${bend} ${y1 + direction * curve}
+      V ${y2 - direction * curve} Q ${bend} ${y2} ${bend + curve} ${y2} H ${x2}`;
+    for (const line of trace.querySelectorAll('path')) line.setAttribute('d', path);
+    const port = trace.querySelector('rect');
+    port.setAttribute('x', x2 - 4);
+    port.setAttribute('y', y2 - 4);
+  });
+}
+
 async function api(url, options = {}) {
   const response = await fetch('api' + url, { ...options, headers: { 'Content-Type': 'application/json' }, body: options.body ? JSON.stringify(options.body) : undefined });
   const data = await response.json();
@@ -43,7 +76,7 @@ function renderTree() {
   function branch(parent, depth) {
     return state.categories.filter(c => c.parent_id === parent).map(c => {
       const children = state.categories.some(item => item.parent_id === c.id);
-      return `<div data-direction-id="${c.id}" class="tree-row ${state.selected === c.id ? 'active' : ''}" style="--depth:${depth}"><button class="toggle" data-toggle="${c.id}" aria-label="展开或收起">${children ? (state.collapsed.has(c.id) ? '›' : '⌄') : ''}</button><a class="tree-name" data-category="${c.id}" href="${escapeHTML(pagePath(c.slug))}"><span class="folder">▱</span><span>${escapeHTML(c.name)}</span></a><span class="direction-grip" data-direction-grip aria-hidden="true" title="拖动排序，或移入另一个方向">⠿</span><button class="dots" data-actions="${c.id}" aria-label="方向操作">···</button></div>${state.collapsed.has(c.id) ? '' : branch(c.id, depth + 1)}`;
+      return `<div data-direction-id="${c.id}" data-depth="${depth}" class="tree-row ${state.selected === c.id ? 'active' : ''}" style="--depth:${depth}"><button class="toggle" data-toggle="${c.id}" aria-label="展开或收起">${children ? (state.collapsed.has(c.id) ? '›' : '⌄') : ''}</button><a class="tree-name" data-category="${c.id}" href="${escapeHTML(pagePath(c.slug))}"><span class="folder">${schematicIcon('folder')}</span><span>${escapeHTML(c.name)}</span></a><span class="direction-grip" data-direction-grip aria-hidden="true" title="拖动排序，或移入另一个方向">⠿</span><button class="dots" data-actions="${c.id}" aria-label="方向操作">···</button></div>${state.collapsed.has(c.id) ? '' : branch(c.id, depth + 1)}`;
     }).join('');
   }
   const rows = branch(null, 0);
@@ -51,6 +84,7 @@ function renderTree() {
     ? `${rows}<div class="direction-root-drop" data-direction-root>移到顶层末尾</div>`
     : '<p class="tree-empty">还没有方向，添加一个吧</p>';
   $('#all').classList.toggle('selected', state.selected === null && !state.post && !state.missing);
+  scheduleBlueprintTrace();
 }
 function breadcrumbs(categoryId, title) {
   const path = [];
@@ -60,7 +94,7 @@ function breadcrumbs(categoryId, title) {
     path.unshift(category);
     id = category.parent_id;
   }
-  const home = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.8 1.5 12h3v9h5v-6h5v6h5v-9h3L12 2.8Z"/></svg>';
+  const home = schematicIcon('home');
   const items = [{ id: '', name: '主页', icon: home }, ...path];
   if (title) items.push({ name: title });
 
@@ -117,6 +151,7 @@ function restorePageFromUrl() {
 function renderContent() {
   stopPostOutline?.();
   stopPostOutline = null;
+  scheduleBlueprintTrace();
   if (state.post) return renderPost();
   if (state.missing) {
     document.title = '页面不存在 — SkillHub';
@@ -143,7 +178,7 @@ function renderContent() {
       ${breadcrumbs(cat?.id)}
       <div class="page-title">
         <h1>${cat ? escapeHTML(cat.name) : '发现团队的好 Skill'}</h1>
-        <button class="primary" id="list-new">＋ 分享 Skill</button>
+        <button class="primary" id="list-new">${schematicIcon('plus')} 分享 Skill</button>
       </div>
       <div class="post-status">
         <div class="post-status-counts">
@@ -154,16 +189,17 @@ function renderContent() {
       </div>
       ${posts.length ? `<div class="post-list">${posts.map(p => `
         <a class="post-row" data-post="${p.id}" href="${escapeHTML(pagePath(p.slug))}">
-          ${avatar(p.author)}
+          <span class="post-schematic">${schematicIcon('chip')}</span>
+          <svg class="post-traces" viewBox="0 0 320 150" preserveAspectRatio="xMaxYMid meet" aria-hidden="true"><use href="#sch-card-traces"/></svg>
           <div class="post-main">
             <div class="post-title">${escapeHTML(p.title)}</div>
             <p>${escapeHTML(p.content.slice(0, 100) || '包含图片或视频')}</p>
             <div class="post-meta"><span>${escapeHTML(p.author)}</span><span>·</span><span>${escapeHTML(p.category_name)}</span><span>·</span><span>${date(p.created_at)}</span></div>
           </div>
-          <span class="comment-count">♧ ${p.comment_count}</span><span class="row-arrow">›</span>
+          <span class="comment-count" aria-label="${p.comment_count} 条评论">${schematicIcon('comments')} ${p.comment_count}</span><span class="row-arrow">${schematicIcon('chevron')}</span>
         </a>`).join('')}</div>` : `
         <div class="empty">
-          <div class="empty-icon">▤</div>
+          <div class="empty-icon">${schematicIcon('chip')}</div>
           <h3>${query ? '没有找到相关内容' : '这里还没有分享'}</h3>
           ${!query ? '<button class="secondary" id="empty-new">＋ 分享第一个 Skill</button>' : ''}
         </div>`}
@@ -188,19 +224,20 @@ function renderPost() {
           <div id="post-document" class="post-body${p.document ? ' rich-document' : ''}">${p.document ? '' : escapeHTML(p.content)}</div>
           <section class="comments" id="post-comments">
             <div class="comment-heading"><h2>评论 <span>${p.comments.length}</span></h2></div>
-            ${p.comments.length ? p.comments.map(c => `
+            ${p.comments.map(c => `
               <div class="comment">
                 ${avatar(c.author)}
                 <div>
                   <div class="comment-meta"><strong>${escapeHTML(c.author)}</strong><time>${date(c.created_at)}</time></div>
                   <p>${escapeHTML(c.content)}</p>
                 </div>
-              </div>`).join('') : '<p class="no-comments">还没有评论，来分享第一个想法吧。</p>'}
+              </div>`).join('')}
             <form id="comment-form" class="comment-form">
-              ${namePickerFields()}
-              <label for="comment">评论</label>
-              <textarea id="comment" name="content" maxlength="10000" required placeholder="写下你的评论..."></textarea>
-              <div class="form-bottom"><button class="primary">发表评论</button></div>
+              <div class="comment-form-top">
+                ${namePickerFields()}
+                <button type="submit" class="primary">发表评论</button>
+              </div>
+              <textarea id="comment" name="content" aria-label="评论" rows="2" maxlength="10000" required placeholder="写下你的评论..."></textarea>
               <p id="comment-error" class="error" role="alert"></p>
             </form>
           </section>
@@ -341,13 +378,13 @@ function nameOptions(selected) {
   const names = [...new Set([...presetNames, ...preference.custom])];
   selected ??= preference.selected;
   return `<option value="" disabled${names.includes(selected) ? '' : ' selected'}>选择名称</option>` + names.map(name =>
-    `<option value="${escapeHTML(name)}"${name === selected ? ' selected' : ''}>${escapeHTML(name)}</option>`).join('');
+    `<option value="${escapeHTML(name)}"${name === selected ? ' selected' : ''}>${escapeHTML(name)}</option>`).join('') +
+    '<option value="" data-create-name>＋ 新建名称</option>';
 }
 
 function namePickerFields(label = '名称', selected) {
   return `<div class="name-picker">
     <label>${label}<select name="author" required>${nameOptions(selected)}</select></label>
-    <button type="button" class="secondary" data-add-name>＋ 新建名称</button>
     <div class="name-create" data-name-create hidden>
       <label>新名称<input data-name-input maxlength="40"></label>
       <div class="name-create-actions">
@@ -364,7 +401,7 @@ function setupNamePicker(picker) {
   const panel = picker.querySelector('[data-name-create]');
   const input = picker.querySelector('[data-name-input]');
   const error = picker.querySelector('[data-name-error]');
-  const add = picker.querySelector('[data-add-name]');
+  let selected = select.value;
   function close() {
     panel.hidden = true;
     input.value = error.textContent = '';
@@ -379,10 +416,20 @@ function setupNamePicker(picker) {
     }
     rememberName(name, true);
     select.innerHTML = nameOptions(name);
+    selected = name;
     close();
   }
-  select.onchange = () => rememberName(select.value);
-  add.onclick = () => { panel.hidden = false; input.focus(); };
+  select.onchange = () => {
+    if (select.selectedOptions[0]?.hasAttribute('data-create-name')) {
+      select.value = selected;
+      panel.hidden = false;
+      input.focus();
+      return;
+    }
+    selected = select.value;
+    rememberName(selected);
+    if (!panel.hidden) close();
+  };
   picker.querySelector('[data-name-cancel]').onclick = close;
   picker.querySelector('[data-name-save]').onclick = create;
   input.onkeydown = event => {
@@ -593,6 +640,7 @@ window.addEventListener('popstate', () => {
   if (leaveDocumentEditor && !leaveDocumentEditor()) return;
   restorePageFromUrl()?.catch(error => notify(error.message));
 });
+window.addEventListener('resize', scheduleBlueprintTrace);
 refresh(true).catch(error => notify(`连接失败：${error.message}`));
 
 const directionTree = $('#tree');
